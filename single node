@@ -1,0 +1,163 @@
+#!/bin/bash
+
+# Update the system
+echo "Updating the system..."
+sudo yum update -y
+
+# Install Java
+echo "Installing Java..."
+sudo yum install java-1.8.0-openjdk-devel -y
+
+# Verify Java installation
+echo "Verifying Java installation..."
+java -version
+
+# Create Hadoop group and user
+echo "Creating Hadoop group and user..."
+sudo groupadd hadoop
+sudo useradd -g hadoop hduser
+
+# Add hduser to the sudoers file
+echo "Adding hduser to the sudoers file..."
+echo "hduser ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/hduser
+
+# Switch to hduser and configure SSH
+echo "Switching to hduser and configuring SSH..."
+sudo su - hduser << 'EOF'
+echo "Generating SSH keys for passwordless SSH..."
+ssh-keygen -t rsa -P "" -f ~/.ssh/id_rsa
+cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
+ssh-keyscan -H localhost >> ~/.ssh/known_hosts
+ssh localhost exit
+EOF
+
+# Install wget
+echo "Installing wget..."
+sudo yum install wget -y
+
+# Switch to hduser and continue with Hadoop installation
+sudo su - hduser << 'EOF'
+# Download and install Hadoop
+echo "Downloading and installing Hadoop..."
+wget -c https://downloads.apache.org/hadoop/common/stable/hadoop-3.3.4.tar.gz
+tar -xzvf hadoop-3.3.4.tar.gz
+sudo mv hadoop-3.3.4 /usr/local/hadoop
+sudo chown -R hduser:hadoop /usr/local/hadoop
+
+# Set environment variables
+echo "Setting environment variables..."
+cat <<EOL >> ~/.bashrc
+export JAVA_HOME=/usr/lib/jvm/java-1.8.0-openjdk
+export HADOOP_HOME=/usr/local/hadoop
+export PATH=\$PATH:/usr/local/hadoop/bin
+export PATH=\$PATH:/usr/local/hadoop/sbin
+export HADOOP_MAPRED_HOME=/usr/local/hadoop
+export HADOOP_COMMON_HOME=/usr/local/hadoop
+export HADOOP_HDFS_HOME=/usr/local/hadoop
+export YARN_HOME=/usr/local/hadoop
+export HADOOP_CONF_DIR=/usr/local/hadoop/etc/hadoop
+EOL
+source ~/.bashrc
+
+# Configure Hadoop environment
+echo "Configuring Hadoop environment..."
+cd /usr/local/hadoop/etc/hadoop
+
+# Update hadoop-env.sh
+echo "Updating hadoop-env.sh..."
+sudo bash -c 'cat <<EOL >> /usr/local/hadoop/etc/hadoop/hadoop-env.sh
+export JAVA_HOME=/usr/lib/jvm/java-1.8.0-openjdk
+export HADOOP_LOG_DIR=/var/log/hadoop
+EOL'
+
+sudo mkdir -p /var/log/hadoop
+sudo chown -R hduser:hadoop /var/log/hadoop
+
+# Update core-site.xml
+echo "Updating core-site.xml..."
+sudo bash -c 'cat <<EOL > /usr/local/hadoop/etc/hadoop/core-site.xml
+<configuration>
+    <property>
+        <name>fs.defaultFS</name>
+        <value>hdfs://localhost:9000</value>
+    </property>
+</configuration>
+EOL'
+
+# Update mapred-site.xml
+echo "Updating mapred-site.xml..."
+sudo bash -c 'cat <<EOL > /usr/local/hadoop/etc/hadoop/mapred-site.xml
+<configuration>
+    <property>
+        <name>mapreduce.framework.name</name>
+        <value>yarn</value>
+    </property>
+</configuration>
+EOL'
+
+# Update hdfs-site.xml
+echo "Updating hdfs-site.xml..."
+sudo mkdir -p /usr/local/hadoop_store/hdfs/namenode
+sudo mkdir -p /usr/local/hadoop_store/hdfs/datanode
+sudo chown -R hduser:hadoop /usr/local/hadoop_store
+
+sudo bash -c 'cat <<EOL > /usr/local/hadoop/etc/hadoop/hdfs-site.xml
+<configuration>
+    <property>
+        <name>dfs.replication</name>
+        <value>1</value>
+    </property>
+    <property>
+        <name>dfs.namenode.name.dir</name>
+        <value>file:/usr/local/hadoop_store/hdfs/namenode</value>
+    </property>
+    <property>
+        <name>dfs.datanode.data.dir</name>
+        <value>file:/usr/local/hadoop_store/hdfs/datanode</value>
+    </property>
+</configuration>
+EOL'
+
+# Update yarn-site.xml
+echo "Updating yarn-site.xml..."
+sudo bash -c 'cat <<EOL > /usr/local/hadoop/etc/hadoop/yarn-site.xml
+<configuration>
+    <property>
+        <name>yarn.resourcemanager.hostname</name>
+        <value>localhost</value>
+    </property>
+    <property>
+        <name>yarn.nodemanager.aux-services</name>
+        <value>mapreduce_shuffle</value>
+    </property>
+    <property>
+        <name>yarn.nodemanager.env-whitelist</name>
+        <value>JAVA_HOME,HADOOP_COMMON_HOME,HADOOP_HDFS_HOME,HADOOP_CONF_DIR,CLASSPATH_PREPEND_DISTCACHE,HADOOP_YARN_HOME,HADOOP_MAPRED_HOME</value>
+    </property>
+</configuration>
+EOL'
+
+# Ensure proper ownership
+echo "Ensuring proper ownership of Hadoop directories..."
+sudo chown -R hduser:hadoop /usr/local/hadoop/
+
+# Format the Namenode
+echo "Formatting the Namenode..."
+/usr/local/hadoop/bin/hdfs namenode -format
+
+# Start Hadoop services
+echo "Starting Hadoop services..."
+/usr/local/hadoop/sbin/start-dfs.sh
+/usr/local/hadoop/sbin/start-yarn.sh
+
+# Verify Hadoop installation
+echo "Verifying Hadoop installation..."
+/usr/local/hadoop/bin/hdfs dfs -mkdir /user
+/usr/local/hadoop/bin/hdfs dfs -mkdir /user/hduser
+/usr/local/hadoop/bin/hdfs dfs -put /home/hduser/hadoop-3.3.4.tar.gz /user/hduser
+
+# Run a sample MapReduce job
+echo "Running a sample MapReduce job..."
+/usr/local/hadoop/bin/yarn jar /usr/local/hadoop/share/hadoop/mapreduce/hadoop-mapreduce-examples-*.jar pi 5 10
+
+EOF
